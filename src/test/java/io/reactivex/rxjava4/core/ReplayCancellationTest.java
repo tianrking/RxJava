@@ -22,8 +22,6 @@ import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 
 import io.reactivex.rxjava4.disposables.Disposable;
-import io.reactivex.rxjava4.flowables.ConnectableFlowable;
-import io.reactivex.rxjava4.observables.ConnectableObservable;
 import io.reactivex.rxjava4.processors.*;
 import io.reactivex.rxjava4.schedulers.TestScheduler;
 import io.reactivex.rxjava4.subjects.*;
