@@ -74,7 +74,7 @@ public class ReplayCancellationTest extends RxJavaTest {
             replay.subscribe(consumer);
             Disposable connection = replay.connect();
             try {
-                TestHelper.race(() -> consumer.subscription.request(1), consumer.subscription::cancel);
+                TestHelper.race(() -> consumer.upstream.request(1), consumer.upstream::cancel);
                 source.onNext(1);
                 assertEquals(0, consumer.values);
             } finally {
@@ -89,7 +89,7 @@ public class ReplayCancellationTest extends RxJavaTest {
             ReplayProcessor<Object> source = ReplayProcessor.createWithSize(1);
             ReplayConsumer consumer = new ReplayConsumer(new Object());
             source.subscribe(consumer);
-            TestHelper.race(() -> consumer.subscription.request(1), consumer.subscription::cancel);
+            TestHelper.race(() -> consumer.upstream.request(1), consumer.upstream::cancel);
             source.onNext(1);
             assertEquals(0, consumer.values);
             assertFalse(source.hasSubscribers());
@@ -126,9 +126,9 @@ public class ReplayCancellationTest extends RxJavaTest {
         replay.subscribe(consumer);
         replay.connect();
         source.onNext(value);
-        consumer.subscription.cancel();
-        consumer.subscription.cancel();
-        consumer.subscription.request(1);
+        consumer.upstream.cancel();
+        consumer.upstream.cancel();
+        consumer.upstream.request(1);
         return consumer;
     }
 
@@ -159,9 +159,9 @@ public class ReplayCancellationTest extends RxJavaTest {
         };
         source.subscribe(consumer);
         source.onNext(value);
-        consumer.subscription.cancel();
-        consumer.subscription.cancel();
-        consumer.subscription.request(1);
+        consumer.upstream.cancel();
+        consumer.upstream.cancel();
+        consumer.upstream.request(1);
         assertFalse(source.hasSubscribers());
         return consumer;
     }
@@ -183,7 +183,7 @@ public class ReplayCancellationTest extends RxJavaTest {
     static final class ReplayConsumer implements Observer<Object>, FlowableSubscriber<Object> {
         final WeakReference<Object> value;
         Disposable disposable;
-        Subscription subscription;
+        Subscription upstream;
         int values;
 
         ReplayConsumer(Object value) {
@@ -197,7 +197,7 @@ public class ReplayCancellationTest extends RxJavaTest {
 
         @Override
         public void onSubscribe(Subscription s) {
-            subscription = s;
+            upstream = s;
             s.request(Long.MAX_VALUE);
         }
 
