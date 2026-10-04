@@ -25,34 +25,74 @@ import io.reactivex.rxjava4.disposables.Disposable;
 import io.reactivex.rxjava4.processors.*;
 import io.reactivex.rxjava4.schedulers.TestScheduler;
 import io.reactivex.rxjava4.subjects.*;
+import io.reactivex.rxjava4.testsupport.TestHelper;
 
 public class ReplayCancellationTest extends RxJavaTest {
 
     @Test
     public void cancelledObservableDoesNotRetainBuffer() throws Exception {
-        for (int kind = 0; kind < 3; kind++) {
-            assertReclaimed(cancelObservable(kind));
-        }
+        assertAll(
+                () -> assertReclaimed(cancelObservable(0)),
+                () -> assertReclaimed(cancelObservable(1)),
+                () -> assertReclaimed(cancelObservable(2))
+        );
     }
 
     @Test
     public void cancelledFlowableDoesNotRetainBuffer() throws Exception {
-        for (int kind = 0; kind < 3; kind++) {
-            assertReclaimed(cancelFlowable(kind));
-        }
+        assertAll(
+                () -> assertReclaimed(cancelFlowable(0)),
+                () -> assertReclaimed(cancelFlowable(1)),
+                () -> assertReclaimed(cancelFlowable(2))
+        );
     }
 
     @Test
     public void cancelledSubjectDoesNotRetainBuffer() throws Exception {
-        for (int kind = 0; kind < 3; kind++) {
-            assertReclaimed(cancelSubject(kind));
-        }
+        assertAll(
+                () -> assertReclaimed(cancelSubject(0)),
+                () -> assertReclaimed(cancelSubject(1)),
+                () -> assertReclaimed(cancelSubject(2))
+        );
     }
 
     @Test
     public void cancelledProcessorDoesNotRetainBuffer() throws Exception {
-        for (int kind = 0; kind < 3; kind++) {
-            assertReclaimed(cancelProcessor(kind));
+        assertAll(
+                () -> assertReclaimed(cancelProcessor(0)),
+                () -> assertReclaimed(cancelProcessor(1)),
+                () -> assertReclaimed(cancelProcessor(2))
+        );
+    }
+
+    @Test
+    public void flowableRequestCancelRace() {
+        for (int i = 0; i < TestHelper.RACE_DEFAULT_LOOPS; i++) {
+            PublishProcessor<Object> source = PublishProcessor.create();
+            ConnectableFlowable<Object> replay = source.replay(1);
+            ReplayConsumer consumer = new ReplayConsumer(new Object());
+            replay.subscribe(consumer);
+            Disposable connection = replay.connect();
+            try {
+                TestHelper.race(() -> consumer.subscription.request(1), consumer.subscription::cancel);
+                source.onNext(1);
+                assertEquals(0, consumer.values);
+            } finally {
+                connection.dispose();
+            }
+        }
+    }
+
+    @Test
+    public void processorRequestCancelRace() {
+        for (int i = 0; i < TestHelper.RACE_DEFAULT_LOOPS; i++) {
+            ReplayProcessor<Object> source = ReplayProcessor.createWithSize(1);
+            ReplayConsumer consumer = new ReplayConsumer(new Object());
+            source.subscribe(consumer);
+            TestHelper.race(() -> consumer.subscription.request(1), consumer.subscription::cancel);
+            source.onNext(1);
+            assertEquals(0, consumer.values);
+            assertFalse(source.hasSubscribers());
         }
     }
 
