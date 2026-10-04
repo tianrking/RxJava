@@ -8,7 +8,8 @@ permissions:
   contents: read
 
 env:
-  SOURCE_SHA: 9264a4b4e04fa2ad062b5244c28cf20b7211c255
+  SOURCE_SHA: 8f670afe79ec13931038edc781f5f0e55ca5f153
+  ORIGINAL_TEST_SHA: 5365047e1cee33b03388bb852cfeb5e7b99807e0
   BASE_SHA: 99a91899189b4ae1134b52304d467807f3bc70ee
 
 defaults:
@@ -20,56 +21,101 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  original-red:
+  native:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        phase: [original-red, focused-green, native-full]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: ${{ env.SOURCE_SHA }}
+          ref: ${{ matrix.phase == 'original-red' && env.ORIGINAL_TEST_SHA || env.SOURCE_SHA }}
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6
         with:
           distribution: zulu
           java-version: '26'
-      - name: Record original production code and exact tests
+      - name: Record exact source and preserve the official heap
+        env:
+          PHASE: ${{ matrix.phase }}
         run: |
           mkdir -p evidence
-          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
-          git diff --exit-code "$BASE_SHA" -- src/main
+          expected="$SOURCE_SHA"
+          if [ "$PHASE" = original-red ]; then
+            expected="$ORIGINAL_TEST_SHA"
+            git diff --exit-code "$BASE_SHA" -- src/main
+          fi
+          test "$(git rev-parse HEAD)" = "$expected"
+          test "$(git rev-parse HEAD:src/test/java/io/reactivex/rxjava4/core/ReplayCancellationTest.java)" = "$(git rev-parse "$SOURCE_SHA":src/test/java/io/reactivex/rxjava4/core/ReplayCancellationTest.java)"
           git rev-parse HEAD > evidence/source-head.txt
           git show -s --format=fuller > evidence/commit-identity.txt
           git diff "$BASE_SHA" > evidence/candidate.patch
-          git ls-files -s src/main src/test > evidence/source-before.txt
+          git ls-files -z src/main src/test | xargs -0 sha256sum > evidence/source-before.sha256
           java -version 2> evidence/java-version.txt
           cat > ../bounded-tests.gradle <<'EOF'
-          allprojects {
-              tasks.withType(Test).configureEach {
-                  maxParallelForks = 1
-                  doFirst {
-                      logger.lifecycle("Native test configuration: maxParallelForks={}, maxHeapSize={}", maxParallelForks, maxHeapSize)
+          gradle.projectsEvaluated {
+              allprojects {
+                  tasks.withType(Test).configureEach {
+                      maxParallelForks = 1
+                      doFirst {
+                          if (maxParallelForks != 1 || maxHeapSize != '1200m') {
+                              throw new GradleException('Unexpected native test configuration')
+                          }
+                          logger.lifecycle("Native test configuration: maxParallelForks={}, maxHeapSize={}", maxParallelForks, maxHeapSize)
+                      }
+                      doLast {
+                          project.copy {
+                              from reports.junitXml.outputLocation
+                              into "${rootDir}/evidence/${name}-results"
+                          }
+                      }
                   }
               }
           }
           EOF
           cp ../bounded-tests.gradle evidence/
           chmod +x gradlew
-      - name: Run regression against unchanged original production
+      - name: Run native phase and preserve all actual exit codes
+        env:
+          PHASE: ${{ matrix.phase }}
         run: |
-          set +e
-          ./gradlew test --tests 'io.reactivex.rxjava4.core.ReplayCancellationTest' --stacktrace --no-daemon --max-workers=1 --init-script ../bounded-tests.gradle 2>&1 | tee evidence/focused.log
-          result=${PIPESTATUS[0]}
-          set -e
-          printf '%s\n' "$result" > evidence/focused.exit
-          cp -r build/test-results evidence/ || true
-          git ls-files -s src/main src/test > evidence/source-after.txt
-          diff -u evidence/source-before.txt evidence/source-after.txt
+          run_gradle() {
+            label="$1"
+            shift
+            set +e
+            ./gradlew "$@" --stacktrace --no-daemon --max-workers=1 --init-script ../bounded-tests.gradle 2>&1 | tee "evidence/$label.log"
+            result=${PIPESTATUS[0]}
+            set -e
+            printf '%s\n' "$result" > "evidence/$label.exit"
+            if [ -d build/test-results ]; then
+              cp -r build/test-results "evidence/$label-test-results"
+            fi
+            if [ "$result" -ne 0 ]; then
+              exit "$result"
+            fi
+          }
+          if [ "$PHASE" = original-red ]; then
+            run_gradle original-red test --tests 'io.reactivex.rxjava4.core.ReplayCancellationTest'
+          elif [ "$PHASE" = focused-green ]; then
+            run_gradle focused-green test --tests 'io.reactivex.rxjava4.core.ReplayCancellationTest' --tests 'io.reactivex.rxjava4.subjects.ReplaySubjectTest' --tests 'io.reactivex.rxjava4.processors.ReplayProcessorTest' --tests 'io.reactivex.rxjava4.internal.operators.observable.ObservableReplay*Test' --tests 'io.reactivex.rxjava4.internal.operators.flowable.FlowableReplay*Test'
+          else
+            run_gradle validators test --tests 'io.reactivex.rxjava4.validators.*'
+            run_gradle build build
+            run_gradle javadoc javadoc
+            cp -r build/reports evidence/
+          fi
+      - name: Verify no tracked source changes during native execution
+        if: always()
+        run: |
+          git ls-files -z src/main src/test | xargs -0 sha256sum > evidence/source-after.sha256
+          diff -u evidence/source-before.sha256 evidence/source-after.sha256
           git diff --exit-code -- src/main src/test
-          exit "$result"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
-          name: original-red-evidence
+          name: ${{ matrix.phase }}-evidence
           path: evidence/
           retention-days: 30
