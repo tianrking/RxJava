@@ -1,0 +1,181 @@
+/*
+ * Copyright (c) 2016-present, RxJava Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in
+ * compliance with the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is
+ * distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See
+ * the License for the specific language governing permissions and limitations under the License.
+ */
+
+package io.reactivex.rxjava4.core;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+import java.lang.ref.*;
+import java.util.concurrent.Flow.Subscription;
+import java.util.concurrent.TimeUnit;
+
+import org.junit.jupiter.api.Test;
+
+import io.reactivex.rxjava4.disposables.Disposable;
+import io.reactivex.rxjava4.flowables.ConnectableFlowable;
+import io.reactivex.rxjava4.observables.ConnectableObservable;
+import io.reactivex.rxjava4.processors.*;
+import io.reactivex.rxjava4.schedulers.TestScheduler;
+import io.reactivex.rxjava4.subjects.*;
+
+public class ReplayCancellationTest extends RxJavaTest {
+
+    @Test
+    public void cancelledObservableDoesNotRetainBuffer() throws Exception {
+        for (int kind = 0; kind < 3; kind++) {
+            assertReclaimed(cancelObservable(kind));
+        }
+    }
+
+    @Test
+    public void cancelledFlowableDoesNotRetainBuffer() throws Exception {
+        for (int kind = 0; kind < 3; kind++) {
+            assertReclaimed(cancelFlowable(kind));
+        }
+    }
+
+    @Test
+    public void cancelledSubjectDoesNotRetainBuffer() throws Exception {
+        for (int kind = 0; kind < 3; kind++) {
+            assertReclaimed(cancelSubject(kind));
+        }
+    }
+
+    @Test
+    public void cancelledProcessorDoesNotRetainBuffer() throws Exception {
+        for (int kind = 0; kind < 3; kind++) {
+            assertReclaimed(cancelProcessor(kind));
+        }
+    }
+
+    static ReplayConsumer cancelObservable(int kind) {
+        Object value = new Object();
+        ReplayConsumer consumer = new ReplayConsumer(value);
+        PublishSubject<Object> source = PublishSubject.create();
+        ConnectableObservable<Object> replay = switch (kind) {
+            case 0 -> source.replay();
+            case 1 -> source.replay(1);
+            default -> source.replay(1, 1, TimeUnit.DAYS, new TestScheduler());
+        };
+        replay.subscribe(consumer);
+        replay.connect();
+        source.onNext(value);
+        consumer.disposable.dispose();
+        consumer.disposable.dispose();
+        assertTrue(consumer.disposable.isDisposed());
+        return consumer;
+    }
+
+    static ReplayConsumer cancelFlowable(int kind) {
+        Object value = new Object();
+        ReplayConsumer consumer = new ReplayConsumer(value);
+        PublishProcessor<Object> source = PublishProcessor.create();
+        ConnectableFlowable<Object> replay = switch (kind) {
+            case 0 -> source.replay();
+            case 1 -> source.replay(1);
+            default -> source.replay(1, 1, TimeUnit.DAYS, new TestScheduler());
+        };
+        replay.subscribe(consumer);
+        replay.connect();
+        source.onNext(value);
+        consumer.subscription.cancel();
+        consumer.subscription.cancel();
+        consumer.subscription.request(1);
+        return consumer;
+    }
+
+    static ReplayConsumer cancelSubject(int kind) {
+        Object value = new Object();
+        ReplayConsumer consumer = new ReplayConsumer(value);
+        ReplaySubject<Object> source = switch (kind) {
+            case 0 -> ReplaySubject.create();
+            case 1 -> ReplaySubject.createWithSize(1);
+            default -> ReplaySubject.createWithTimeAndSize(1, TimeUnit.DAYS, new TestScheduler(), 1);
+        };
+        source.subscribe(consumer);
+        source.onNext(value);
+        consumer.disposable.dispose();
+        consumer.disposable.dispose();
+        assertTrue(consumer.disposable.isDisposed());
+        assertFalse(source.hasObservers());
+        return consumer;
+    }
+
+    static ReplayConsumer cancelProcessor(int kind) {
+        Object value = new Object();
+        ReplayConsumer consumer = new ReplayConsumer(value);
+        ReplayProcessor<Object> source = switch (kind) {
+            case 0 -> ReplayProcessor.create();
+            case 1 -> ReplayProcessor.createWithSize(1);
+            default -> ReplayProcessor.createWithTimeAndSize(1, TimeUnit.DAYS, new TestScheduler(), 1);
+        };
+        source.subscribe(consumer);
+        source.onNext(value);
+        consumer.subscription.cancel();
+        consumer.subscription.cancel();
+        consumer.subscription.request(1);
+        assertFalse(source.hasSubscribers());
+        return consumer;
+    }
+
+    static void assertReclaimed(ReplayConsumer consumer) throws Exception {
+        assertEquals(1, consumer.values);
+        // Keep the original cancelled handle reachable, as a custom consumer may do.
+        try {
+            for (int i = 0; i < 20 && consumer.value.get() != null; i++) {
+                System.gc();
+                Thread.sleep(50);
+            }
+            assertNull(consumer.value.get(), "A cancelled replay consumer retained its cached value");
+        } finally {
+            Reference.reachabilityFence(consumer);
+        }
+    }
+
+    static final class ReplayConsumer implements Observer<Object>, FlowableSubscriber<Object> {
+        final WeakReference<Object> value;
+        Disposable disposable;
+        Subscription subscription;
+        int values;
+
+        ReplayConsumer(Object value) {
+            this.value = new WeakReference<>(value);
+        }
+
+        @Override
+        public void onSubscribe(Disposable d) {
+            disposable = d;
+        }
+
+        @Override
+        public void onSubscribe(Subscription s) {
+            subscription = s;
+            s.request(Long.MAX_VALUE);
+        }
+
+        @Override
+        public void onNext(Object item) {
+            values++;
+        }
+
+        @Override
+        public void onError(Throwable error) {
+            throw new AssertionError(error);
+        }
+
+        @Override
+        public void onComplete() {
+            // The cancellation tests use nonterminating sources.
+        }
+    }
+}
