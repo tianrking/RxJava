@@ -8,7 +8,7 @@ permissions:
   contents: read
 
 env:
-  SOURCE_SHA: 681f104642ccf60cf4dac4783a8b2a59c71a2114
+  SOURCE_SHA: 9264a4b4e04fa2ad062b5244c28cf20b7211c255
   BASE_SHA: 99a91899189b4ae1134b52304d467807f3bc70ee
 
 defaults:
