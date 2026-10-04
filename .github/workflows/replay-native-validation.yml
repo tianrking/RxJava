@@ -1,0 +1,75 @@
+name: Replay cancellation native validation
+
+'on':
+  push:
+    branches: [codex/rxjava-native-validation]
+
+permissions:
+  contents: read
+
+env:
+  SOURCE_SHA: 681f104642ccf60cf4dac4783a8b2a59c71a2114
+  BASE_SHA: 99a91899189b4ae1134b52304d467807f3bc70ee
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: rxjava-replay-helper-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  original-red:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6
+        with:
+          distribution: zulu
+          java-version: '26'
+      - name: Record original production code and exact tests
+        run: |
+          mkdir -p evidence
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          git diff --exit-code "$BASE_SHA" -- src/main
+          git rev-parse HEAD > evidence/source-head.txt
+          git show -s --format=fuller > evidence/commit-identity.txt
+          git diff "$BASE_SHA" > evidence/candidate.patch
+          git ls-files -s src/main src/test > evidence/source-before.txt
+          java -version 2> evidence/java-version.txt
+          cat > ../bounded-tests.gradle <<'EOF'
+          allprojects {
+              tasks.withType(Test).configureEach {
+                  maxParallelForks = 1
+                  doFirst {
+                      logger.lifecycle("Native test configuration: maxParallelForks={}, maxHeapSize={}", maxParallelForks, maxHeapSize)
+                  }
+              }
+          }
+          EOF
+          cp ../bounded-tests.gradle evidence/
+          chmod +x gradlew
+      - name: Run regression against unchanged original production
+        run: |
+          set +e
+          ./gradlew test --tests 'io.reactivex.rxjava4.core.ReplayCancellationTest' --stacktrace --no-daemon --max-workers=1 --init-script ../bounded-tests.gradle 2>&1 | tee evidence/focused.log
+          result=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$result" > evidence/focused.exit
+          cp -r build/test-results evidence/ || true
+          git ls-files -s src/main src/test > evidence/source-after.txt
+          diff -u evidence/source-before.txt evidence/source-after.txt
+          git diff --exit-code -- src/main src/test
+          exit "$result"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: original-red-evidence
+          path: evidence/
+          retention-days: 30
